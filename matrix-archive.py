@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 
-import asyncio
-import getpass
-from urllib.parse import urlparse
 from nio import (
     AsyncClient,
     AsyncClientConfig,
@@ -11,6 +8,7 @@ from nio import (
     ProfileGetAvatarResponse,
     RedactedEvent,
     RoomEncryptedMedia,
+    RoomMessage,
     RoomMessageFormatted,
     RoomMessageMedia,
     RoomMessagesError,
@@ -19,10 +17,28 @@ from nio import (
     crypto,
     store,
 )
-from typing import Union
+from typing import Union, TextIO
+from urllib.parse import urlparse
+import asyncio
+import getpass
+import os
+import sys
+import yaml
+import aiofiles
 
 
 DEVICE_NAME = "matrix-archive"
+
+
+def mkdir(path):
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        pass
+    return path
+
+
+OUTPUT_DIR = mkdir(sys.argv[1] if 1 < len(sys.argv) else ".")
 
 
 async def create_client() -> AsyncClient:
@@ -45,79 +61,123 @@ async def create_client() -> AsyncClient:
 
 
 async def select_room(client: AsyncClient) -> MatrixRoom:
-    print("List of joined rooms (room id, display name):")
+    print("\nList of joined rooms (room id, display name):")
     for room_id, room in client.rooms.items():
         print(f"{room_id}, {room.display_name}")
     room_id = input(f"Enter room id: ")
     return client.rooms[room_id]
 
 
-async def fetch_room_events(
+async def write_event(
+    client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
+) -> None:
+    media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
+    serialize_event = lambda event_payload: yaml.dump(
+        [
+            {
+                **dict(
+                    sender_id=event.sender,
+                    sender_name=room.users[event.sender].display_name,
+                    timestamp=event.server_timestamp,
+                ),
+                **event_payload,
+            }
+        ]
+    )
+
+    if isinstance(event, RoomMessageFormatted):
+        await output_file.write(serialize_event(dict(type="text", body=event.body,)))
+    elif isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
+        media_data = await download_mxc(client, event.url)
+        filename = f"{media_dir}/{event.body}"
+        async with aiofiles.open(filename, "wb") as f:
+            await f.write(
+                crypto.attachments.decrypt_attachment(
+                    media_data,
+                    event.source["content"]["file"]["key"]["k"],
+                    event.source["content"]["file"]["hashes"]["sha256"],
+                    event.source["content"]["file"]["iv"],
+                )
+            )
+        await output_file.write(serialize_event(dict(type="media", src=filename,)))
+    elif isinstance(event, RedactedEvent):
+        await output_file.write(serialize_event(dict(type="redacted",)))
+
+
+async def save_avatars(client: AsyncClient, room: MatrixRoom) -> None:
+    avatar_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_avatars")
+    for user in room.users.values():
+        if user.avatar_url:
+            async with aiofiles.open(
+                f"{avatar_dir}/{user.user_id}", "wb"
+            ) as f:
+                await f.write(await download_mxc(client, user.avatar_url))
+
+
+async def download_mxc(client: AsyncClient, url: str):
+    mxc = urlparse(url)
+    response = await client.download(mxc.netloc, mxc.path.strip("/"))
+    return response.body
+
+
+async def process_room_events(
     client: AsyncClient,
-    sync_resp: SyncResponse,
+    start_token: str,
     room: MatrixRoom,
+    output_file: TextIO,
     direction: MessageDirection,
-) -> list:
-    start_token = sync_resp.rooms.join[room.room_id].timeline.prev_batch
-    events = []
+) -> None:
     while True:
         response = await client.room_messages(
             room.room_id, start_token, limit=1000, direction=direction
         )
-        if isinstance(response, RoomMessagesError):
-            break
-        start_token = response.end
         if len(response.chunk) == 0:
             break
-        events.extend(response.chunk)
-    return events
-
-
-async def save_media(
-    client: AsyncClient, event: Union[RoomMessageMedia, RoomEncryptedMedia]
-) -> None:
-    mxc = urlparse(event.url)
-    response = await client.download(mxc.netloc, mxc.path.strip("/"))
-    with open(event.body, "wb") as f:
-        f.write(
-            crypto.attachments.decrypt_attachment(
-                response.body,
-                event.source["content"]["file"]["key"]["k"],
-                event.source["content"]["file"]["hashes"]["sha256"],
-                event.source["content"]["file"]["iv"],
-            )
+        events = (
+            reversed(response.chunk)
+            if direction == MessageDirection.back
+            else response.chunk
         )
-
-
-async def room_messages(
-    client: AsyncClient, sync_resp: SyncResponse, room: MatrixRoom
-) -> None:
-    back_events = await fetch_room_events(
-        client, sync_resp, room, MessageDirection.back
-    )
-    front_events = await fetch_room_events(
-        client, sync_resp, room, MessageDirection.front
-    )
-
-    for event in back_events[::-1] + front_events:
-        if isinstance(event, RoomMessageFormatted):
-            print(event, end="\n------\n")
-        elif isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
-            await save_media(client, event)
-        elif isinstance(event, RedactedEvent):
-            print(event, end="\n------\n")
+        for event in events:
+            if isinstance(
+                event,
+                (
+                    RoomMessageFormatted,
+                    RoomMessageMedia,
+                    RoomEncryptedMedia,
+                    RedactedEvent,
+                ),
+            ):
+                await write_event(client, room, output_file, event)
+        start_token = response.end
 
 
 async def main() -> None:
     try:
         client = await create_client()
-        sync_filter = {"room": {"timeline": {"limit": 1}}}
-        sync_resp = await client.sync(full_state=True, sync_filter=sync_filter)
         while True:
+            sync_resp = await client.sync(
+                full_state=True, sync_filter={"room": {"timeline": {"limit": 1}}}
+            )
             room = await select_room(client)
-            await room_messages(client, sync_resp, room)
-    except Exception as e:
-        print(e)
+            print("Fetching room messages and writing to disk...")
+            start_token = sync_resp.rooms.join[room.room_id].timeline.prev_batch
+            async with aiofiles.open(
+                f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}.yaml", "w"
+            ) as output_file:
+                # Generally, it should only be necessary to fetch back events but,
+                # sometimes depending on the sync, front events need to be fetched
+                # as well.
+                await process_room_events(
+                    client, start_token, room, output_file, MessageDirection.back
+                )
+                await process_room_events(
+                    client, start_token, room, output_file, MessageDirection.front
+                )
+            await save_avatars(client, room)
+            print("Successfully wrote all events to disk.")
+    except KeyboardInterrupt:
+        sys.exit(1)
     finally:
         await client.logout()
         await client.close()
