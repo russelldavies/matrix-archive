@@ -5,26 +5,23 @@ from nio import (
     AsyncClientConfig,
     MatrixRoom,
     MessageDirection,
-    ProfileGetAvatarResponse,
     RedactedEvent,
     RoomEncryptedMedia,
     RoomMessage,
     RoomMessageFormatted,
     RoomMessageMedia,
-    RoomMessagesError,
-    SyncResponse,
-    UnknownEvent,
     crypto,
     store,
 )
+from functools import partial
 from typing import Union, TextIO
 from urllib.parse import urlparse
+import aiofiles
 import asyncio
 import getpass
 import os
 import sys
 import yaml
-import aiofiles
 
 
 DEVICE_NAME = "matrix-archive"
@@ -55,7 +52,7 @@ async def create_client() -> AsyncClient:
     client.load_store()
     room_keys_path = input("Enter full path to room E2E keys: ")
     room_keys_password = getpass.getpass("Room keys password: ")
-    print("Importing keys, this may take a while...")
+    print("Importing keys. This may take a while...")
     await client.import_keys(room_keys_path, room_keys_password)
     return client
 
@@ -108,9 +105,7 @@ async def save_avatars(client: AsyncClient, room: MatrixRoom) -> None:
     avatar_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_avatars")
     for user in room.users.values():
         if user.avatar_url:
-            async with aiofiles.open(
-                f"{avatar_dir}/{user.user_id}", "wb"
-            ) as f:
+            async with aiofiles.open(f"{avatar_dir}/{user.user_id}", "wb") as f:
                 await f.write(await download_mxc(client, user.avatar_url))
 
 
@@ -120,36 +115,25 @@ async def download_mxc(client: AsyncClient, url: str):
     return response.body
 
 
-async def process_room_events(
+async def fetch_room_events(
     client: AsyncClient,
     start_token: str,
     room: MatrixRoom,
-    output_file: TextIO,
     direction: MessageDirection,
-) -> None:
+) -> list:
+    is_valid_event = lambda e: isinstance(
+        e, (RoomMessageFormatted, RoomMessageMedia, RoomEncryptedMedia, RedactedEvent,)
+    )
+    events = []
     while True:
         response = await client.room_messages(
             room.room_id, start_token, limit=1000, direction=direction
         )
         if len(response.chunk) == 0:
             break
-        events = (
-            reversed(response.chunk)
-            if direction == MessageDirection.back
-            else response.chunk
-        )
-        for event in events:
-            if isinstance(
-                event,
-                (
-                    RoomMessageFormatted,
-                    RoomMessageMedia,
-                    RoomEncryptedMedia,
-                    RedactedEvent,
-                ),
-            ):
-                await write_event(client, room, output_file, event)
+        events.extend(event for event in response.chunk if is_valid_event(event))
         start_token = response.end
+    return events
 
 
 async def main() -> None:
@@ -162,18 +146,19 @@ async def main() -> None:
             room = await select_room(client)
             print("Fetching room messages and writing to disk...")
             start_token = sync_resp.rooms.join[room.room_id].timeline.prev_batch
+            # Generally, it should only be necessary to fetch back events but,
+            # sometimes depending on the sync, front events need to be fetched
+            # as well.
+            fetch_room_events_ = partial(fetch_room_events, client, start_token, room)
             async with aiofiles.open(
                 f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}.yaml", "w"
-            ) as output_file:
-                # Generally, it should only be necessary to fetch back events but,
-                # sometimes depending on the sync, front events need to be fetched
-                # as well.
-                await process_room_events(
-                    client, start_token, room, output_file, MessageDirection.back
-                )
-                await process_room_events(
-                    client, start_token, room, output_file, MessageDirection.front
-                )
+            ) as f:
+                for events in [
+                    reversed(await fetch_room_events_(MessageDirection.back)),
+                    await fetch_room_events_(MessageDirection.front),
+                ]:
+                    for event in events:
+                        await write_event(client, room, f, event)
             await save_avatars(client, room)
             print("Successfully wrote all events to disk.")
     except KeyboardInterrupt:
