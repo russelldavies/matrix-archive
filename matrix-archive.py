@@ -12,6 +12,7 @@ from nio import (
     RoomMessageMedia,
     crypto,
     store,
+    exceptions
 )
 from functools import partial
 from typing import Union, TextIO
@@ -158,7 +159,10 @@ async def main() -> None:
                     await fetch_room_events_(MessageDirection.front),
                 ]:
                     for event in events:
-                        await write_event(client, room, f, event)
+                        try:
+                            await write_event(client, room, f, event)
+                        except exceptions.EncryptionError as e:
+                            print(e)
             await save_avatars(client, room)
             print("Successfully wrote all events to disk.")
     except KeyboardInterrupt:
