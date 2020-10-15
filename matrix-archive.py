@@ -66,6 +66,20 @@ async def select_room(client: AsyncClient) -> MatrixRoom:
     return client.rooms[room_id]
 
 
+def choose_filename(filename):
+    if os.path.exists(filename):
+        try:
+            start, ext = filename.rsplit(".", 1)
+        except ValueError:
+            start, ext = (filename, "")
+        i = 0
+        while os.path.exists(f"{start} ({i}).{ext}"):
+            i += 1
+        return f"{start} ({i}).{ext}"
+    else:
+        return filename
+
+
 async def write_event(
     client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
 ) -> None:
@@ -87,7 +101,7 @@ async def write_event(
         await output_file.write(serialize_event(dict(type="text", body=event.body,)))
     elif isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
         media_data = await download_mxc(client, event.url)
-        filename = f"{media_dir}/{event.body}"
+        filename = choose_filename(f"{media_dir}/{event.body}")
         async with aiofiles.open(filename, "wb") as f:
             await f.write(
                 crypto.attachments.decrypt_attachment(
