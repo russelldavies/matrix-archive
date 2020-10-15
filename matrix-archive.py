@@ -97,6 +97,8 @@ async def write_event(
                     event.source["content"]["file"]["iv"],
                 )
             )
+            # Set atime and mtime of file to event timestamp
+            os.utime(filename, ns=((event.server_timestamp * 1000000,) * 2))
         await output_file.write(serialize_event(dict(type="media", src=filename,)))
     elif isinstance(event, RedactedEvent):
         await output_file.write(serialize_event(dict(type="redacted",)))
