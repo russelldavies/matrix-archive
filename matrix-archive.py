@@ -98,20 +98,21 @@ async def write_event(
     if isinstance(event, RoomMessageFormatted):
         await output_file.write(serialize_event(dict(type="text", body=event.body,)))
     elif isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
-        media_data = await download_mxc(client, event.url)
-        filename = choose_filename(f"{media_dir}/{event.body}")
-        async with aiofiles.open(filename, "wb") as f:
-            await f.write(
-                crypto.attachments.decrypt_attachment(
-                    media_data,
-                    event.source["content"]["file"]["key"]["k"],
-                    event.source["content"]["file"]["hashes"]["sha256"],
-                    event.source["content"]["file"]["iv"],
+        if not args.no_media:
+            media_data = await download_mxc(client, event.url)
+            filename = choose_filename(f"{media_dir}/{event.body}")
+            async with aiofiles.open(filename, "wb") as f:
+                await f.write(
+                    crypto.attachments.decrypt_attachment(
+                        media_data,
+                        event.source["content"]["file"]["key"]["k"],
+                        event.source["content"]["file"]["hashes"]["sha256"],
+                        event.source["content"]["file"]["iv"],
+                    )
                 )
-            )
-            # Set atime and mtime of file to event timestamp
-            os.utime(filename, ns=((event.server_timestamp * 1000000,) * 2))
-        await output_file.write(serialize_event(dict(type="media", src=filename,)))
+                # Set atime and mtime of file to event timestamp
+                os.utime(filename, ns=((event.server_timestamp * 1000000,) * 2))
+            await output_file.write(serialize_event(dict(type="media", src=filename,)))
     elif isinstance(event, RedactedEvent):
         await output_file.write(serialize_event(dict(type="redacted",)))
 
@@ -190,6 +191,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("output_dir", default=".", nargs="?",
         help="directory to store output (optional; defaults to current directory)")
+    parser.add_argument("--no-media", action="store_true",
+        help="don't download media")
     args = parser.parse_args()
     OUTPUT_DIR = args.output_dir
     asyncio.get_event_loop().run_until_complete(main())
