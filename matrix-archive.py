@@ -18,6 +18,7 @@ from functools import partial
 from typing import Union, TextIO
 from urllib.parse import urlparse
 import aiofiles
+import argparse
 import asyncio
 import getpass
 import os
@@ -34,9 +35,6 @@ def mkdir(path):
     except FileExistsError:
         pass
     return path
-
-
-OUTPUT_DIR = mkdir(sys.argv[1] if 1 < len(sys.argv) else ".")
 
 
 async def create_client() -> AsyncClient:
@@ -189,4 +187,9 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("output_dir", default=".", nargs="?",
+        help="directory to store output (optional; defaults to current directory)")
+    args = parser.parse_args()
+    OUTPUT_DIR = args.output_dir
     asyncio.get_event_loop().run_until_complete(main())
