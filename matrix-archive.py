@@ -18,6 +18,7 @@ from functools import partial
 from typing import Union, TextIO
 from urllib.parse import urlparse
 import aiofiles
+import argparse
 import asyncio
 import getpass
 import itertools
@@ -35,9 +36,6 @@ def mkdir(path):
     except FileExistsError:
         pass
     return path
-
-
-OUTPUT_DIR = mkdir(sys.argv[1] if 1 < len(sys.argv) else ".")
 
 
 async def create_client() -> AsyncClient:
@@ -79,7 +77,8 @@ def choose_filename(filename):
 async def write_event(
     client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
 ) -> None:
-    media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
+    if not args.no_media:
+        media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
     sender_name = f"<{event.sender}>"
     if event.sender in room.users:
         # If user is still present in room, include current nickname
@@ -135,15 +134,19 @@ async def download_mxc(client: AsyncClient, url: str):
     return response.body
 
 
+def is_valid_event(event):
+    events = (RoomMessageFormatted, RedactedEvent)
+    if not args.no_media:
+        events += (RoomMessageMedia, RoomEncryptedMedia)
+    return isinstance(event, events)
+
+
 async def fetch_room_events(
     client: AsyncClient,
     start_token: str,
     room: MatrixRoom,
     direction: MessageDirection,
 ) -> list:
-    is_valid_event = lambda e: isinstance(
-        e, (RoomMessageFormatted, RoomMessageMedia, RoomEncryptedMedia, RedactedEvent,)
-    )
     events = []
     while True:
         response = await client.room_messages(
@@ -192,4 +195,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("output_dir", default=".", nargs="?",
+        help="directory to store output (optional; defaults to current directory)")
+    parser.add_argument("--no-media", action="store_true",
+        help="don't download media")
+    args = parser.parse_args()
+    OUTPUT_DIR = mkdir(args.output_dir)
     asyncio.get_event_loop().run_until_complete(main())
