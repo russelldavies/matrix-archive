@@ -84,12 +84,16 @@ async def write_event(
     client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
 ) -> None:
     media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
+    sender_name = f"<{event.sender}>"
+    if event.sender in room.users:
+        # If user is still present in room, include current nickname
+        sender_name = f"{room.users[event.sender].display_name} {sender_name}"
     serialize_event = lambda event_payload: yaml.dump(
         [
             {
                 **dict(
                     sender_id=event.sender,
-                    sender_name=room.users[event.sender].display_name,
+                    sender_name=sender_name,
                     timestamp=event.server_timestamp,
                 ),
                 **event_payload,
