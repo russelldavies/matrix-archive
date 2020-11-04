@@ -107,14 +107,17 @@ async def write_event(
         media_data = await download_mxc(client, event.url)
         filename = choose_filename(f"{media_dir}/{event.body}")
         async with aiofiles.open(filename, "wb") as f:
-            await f.write(
-                crypto.attachments.decrypt_attachment(
-                    media_data,
-                    event.source["content"]["file"]["key"]["k"],
-                    event.source["content"]["file"]["hashes"]["sha256"],
-                    event.source["content"]["file"]["iv"],
+            try:
+                await f.write(
+                    crypto.attachments.decrypt_attachment(
+                        media_data,
+                        event.source["content"]["file"]["key"]["k"],
+                        event.source["content"]["file"]["hashes"]["sha256"],
+                        event.source["content"]["file"]["iv"],
+                    )
                 )
-            )
+            except KeyError:  # EAFP: Unencrypted media produces KeyError
+                await f.write(media_data)
             # Set atime and mtime of file to event timestamp
             os.utime(filename, ns=((event.server_timestamp * 1000000,) * 2))
         await output_file.write(serialize_event(dict(type="media", src=filename,)))
