@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import aiofiles
 import asyncio
 import getpass
+import itertools
 import os
 import sys
 import yaml
@@ -67,17 +68,12 @@ async def select_room(client: AsyncClient) -> MatrixRoom:
 
 
 def choose_filename(filename):
-    if os.path.exists(filename):
-        try:
-            start, ext = filename.rsplit(".", 1)
-        except ValueError:
-            start, ext = (filename, "")
-        i = 0
-        while os.path.exists(f"{start} ({i}).{ext}"):
-            i += 1
-        return f"{start} ({i}).{ext}"
-    else:
-        return filename
+    start, ext = os.path.splitext(filename)
+    for i in itertools.count(1):
+        if not os.path.exists(filename):
+            break
+        filename = f"{start}({i}){ext}"
+    return filename
 
 
 async def write_event(
