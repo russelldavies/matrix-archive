@@ -159,34 +159,46 @@ async def fetch_room_events(
     return events
 
 
+async def write_room_events(client, room):
+    print(f"Fetching {room.room_id} room messages and writing to disk...")
+    sync_resp = await client.sync(
+        full_state=True, sync_filter={"room": {"timeline": {"limit": 1}}}
+    )
+    start_token = sync_resp.rooms.join[room.room_id].timeline.prev_batch
+    # Generally, it should only be necessary to fetch back events but,
+    # sometimes depending on the sync, front events need to be fetched
+    # as well.
+    fetch_room_events_ = partial(fetch_room_events, client, start_token, room)
+    async with aiofiles.open(
+        f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}.yaml", "w"
+    ) as f:
+        for events in [
+            reversed(await fetch_room_events_(MessageDirection.back)),
+            await fetch_room_events_(MessageDirection.front),
+        ]:
+            for event in events:
+                try:
+                    await write_event(client, room, f, event)
+                except exceptions.EncryptionError as e:
+                    print(e, file=sys.stderr)
+    await save_avatars(client, room)
+    print("Successfully wrote all room events to disk.")
+
+
 async def main() -> None:
     try:
         client = await create_client()
-        while True:
-            sync_resp = await client.sync(
-                full_state=True, sync_filter={"room": {"timeline": {"limit": 1}}}
-            )
-            room = await select_room(client)
-            print("Fetching room messages and writing to disk...")
-            start_token = sync_resp.rooms.join[room.room_id].timeline.prev_batch
-            # Generally, it should only be necessary to fetch back events but,
-            # sometimes depending on the sync, front events need to be fetched
-            # as well.
-            fetch_room_events_ = partial(fetch_room_events, client, start_token, room)
-            async with aiofiles.open(
-                f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}.yaml", "w"
-            ) as f:
-                for events in [
-                    reversed(await fetch_room_events_(MessageDirection.back)),
-                    await fetch_room_events_(MessageDirection.front),
-                ]:
-                    for event in events:
-                        try:
-                            await write_event(client, room, f, event)
-                        except exceptions.EncryptionError as e:
-                            print(e)
-            await save_avatars(client, room)
-            print("Successfully wrote all events to disk.")
+        await client.sync(
+            full_state=True,
+            # Limit fetch of room events as they will be fetched later
+            sync_filter={"room": {"timeline": {"limit": 1}}})
+        if args.all_rooms:
+            for room in client.rooms.values():
+                await write_room_events(client, room)
+        else:
+            while True:
+                room = await select_room(client)
+                await write_room_events(client, room)
     except KeyboardInterrupt:
         sys.exit(1)
     finally:
@@ -200,6 +212,8 @@ if __name__ == "__main__":
         help="directory to store output (optional; defaults to current directory)")
     parser.add_argument("--no-media", action="store_true",
         help="don't download media")
+    parser.add_argument("--all-rooms", action="store_true",
+        help="select all rooms")
     args = parser.parse_args()
     OUTPUT_DIR = mkdir(args.output_dir)
     asyncio.get_event_loop().run_until_complete(main())
