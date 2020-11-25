@@ -115,7 +115,7 @@ async def write_event(
                 await f.write(media_data)
             # Set atime and mtime of file to event timestamp
             os.utime(filename, ns=((event.server_timestamp * 1000000,) * 2))
-        await output_file.write(serialize_event(dict(type="media", src=filename,)))
+        await output_file.write(serialize_event(dict(type="media", src="." + filename[len(OUTPUT_DIR):],)))
     elif isinstance(event, RedactedEvent):
         await output_file.write(serialize_event(dict(type="redacted",)))
 
