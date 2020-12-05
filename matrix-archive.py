@@ -1,5 +1,46 @@
 #!/usr/bin/env python3
 
+"""matrix-archive
+
+Archive Matrix room messages. Creates a YAML log of all room
+messages, including media.
+
+Use the unattended batch mode to fetch everything in one go without
+having to type anything during script execution. You can set all
+the necessary values with arguments to your command call.
+
+If you don't want to put your passwords in the command call, you
+can still set the default values for homeserver, user ID and room
+keys path already to have them suggested to you during interactive
+execution. Rooms that you specify in the command call will be
+automatically fetched before prompting for further input.
+
+Example calls:
+
+./matrix-archive.py
+    Run program in interactive mode.
+
+./matrix-archive.py backups
+    Set output folder for selected rooms.
+
+./matrix-archive.py --batch --user '@user:matrix.org' --userpass secret --keys element-keys.txt --keyspass secret
+    Use unattended batch mode to login.
+
+./matrix-archive.py --room '!Abcdefghijklmnopqr:matrix.org'
+    Automatically fetch a room.
+
+./matrix-archive.py --room '!Abcdefghijklmnopqr:matrix.org' --room '!Bcdefghijklmnopqrs:matrix.org'
+    Automatically fetch two rooms.
+
+./matrix-archive.py --roomregex '.*:matrix.org'
+    Automatically fetch every rooms which matches a regex pattern.
+
+./matrix-archive.py --all-rooms
+    Automatically fetch all available rooms.
+
+"""
+
+
 from nio import (
     AsyncClient,
     AsyncClientConfig,
@@ -23,11 +64,105 @@ import asyncio
 import getpass
 import itertools
 import os
+import re
 import sys
 import yaml
 
 
 DEVICE_NAME = "matrix-archive"
+
+
+def parse_args():
+    """Parse arguments from command line call"""
+
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        add_help=False,  # Use individual setting below instead
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    parser.add_argument(
+        "folder",
+        metavar="FOLDER",
+        default=".",
+        nargs="?",  # Make positional argument optional
+        help="""Set output folder
+             """,
+    )
+    parser.add_argument(
+        "--help",
+        action="help",
+        help="""Show this help message and exit
+             """,
+    )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="""Use unattended batch mode
+             """,
+    )
+    parser.add_argument(
+        "--server",
+        metavar="HOST",
+        default="https://matrix-client.matrix.org",
+        help="""Set default Matrix homeserver
+             """,
+    )
+    parser.add_argument(
+        "--user",
+        metavar="USER_ID",
+        default="@user:matrix.org",
+        help="""Set default user ID
+             """,
+    )
+    parser.add_argument(
+        "--userpass",
+        metavar="PASSWORD",
+        help="""Set default user password
+             """,
+    )
+    parser.add_argument(
+        "--keys",
+        metavar="FILENAME",
+        default="element-keys.txt",
+        help="""Set default path to room E2E keys
+             """,
+    )
+    parser.add_argument(
+        "--keyspass",
+        metavar="PASSWORD",
+        help="""Set default passphrase for room E2E keys
+             """,
+    )
+    parser.add_argument(
+        "--room",
+        metavar="ROOM_ID",
+        default=[],
+        action="append",
+        help="""Add room to list of automatically fetched rooms
+             """,
+    )
+    parser.add_argument(
+        "--roomregex",
+        metavar="PATTERN",
+        default=[],
+        action="append",
+        help="""Same as --room but by regex pattern
+             """,
+    )
+    parser.add_argument(
+        "--all-rooms",
+        action="store_true",
+        help="""Select all rooms
+             """,
+    )
+    parser.add_argument(
+        "--no-media",
+        action="store_true",
+        help="""Don't download media
+             """,
+    )
+    return parser.parse_args()
 
 
 def mkdir(path):
@@ -39,10 +174,13 @@ def mkdir(path):
 
 
 async def create_client() -> AsyncClient:
-    homeserver = "https://matrix-client.matrix.org"
-    homeserver = input(f"Enter URL of your homeserver: [{homeserver}] ") or homeserver
-    user_id = input(f"Enter your full user ID (e.g. @user:matrix.org): ")
-    password = getpass.getpass()
+    homeserver = ARGS.server
+    user_id = ARGS.user
+    password = ARGS.userpass
+    if not ARGS.batch:
+        homeserver = input(f"Enter URL of your homeserver: [{homeserver}] ") or homeserver
+        user_id = input(f"Enter your full user ID: [{user_id}] ") or user_id
+        password = getpass.getpass()
     client = AsyncClient(
         homeserver=homeserver,
         user=user_id,
@@ -50,8 +188,11 @@ async def create_client() -> AsyncClient:
     )
     await client.login(password, DEVICE_NAME)
     client.load_store()
-    room_keys_path = input("Enter full path to room E2E keys: ")
-    room_keys_password = getpass.getpass("Room keys password: ")
+    room_keys_path = ARGS.keys
+    room_keys_password = ARGS.keyspass
+    if not ARGS.batch:
+        room_keys_path = input(f"Enter full path to room E2E keys: [{room_keys_path}] ") or room_keys_path
+        room_keys_password = getpass.getpass("Room keys password: ")
     print("Importing keys. This may take a while...")
     await client.import_keys(room_keys_path, room_keys_password)
     return client
@@ -77,7 +218,7 @@ def choose_filename(filename):
 async def write_event(
     client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
 ) -> None:
-    if not args.no_media:
+    if not ARGS.no_media:
         media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
     sender_name = f"<{event.sender}>"
     if event.sender in room.users:
@@ -136,7 +277,7 @@ async def download_mxc(client: AsyncClient, url: str):
 
 def is_valid_event(event):
     events = (RoomMessageFormatted, RedactedEvent)
-    if not args.no_media:
+    if not ARGS.no_media:
         events += (RoomMessageMedia, RoomEncryptedMedia)
     return isinstance(event, events)
 
@@ -192,9 +333,16 @@ async def main() -> None:
             full_state=True,
             # Limit fetch of room events as they will be fetched later
             sync_filter={"room": {"timeline": {"limit": 1}}})
-        if args.all_rooms:
-            for room in client.rooms.values():
+        for room_id, room in client.rooms.items():
+            # Iterate over rooms to see if a room has been selected to
+            # be automatically fetched
+            if room_id in ARGS.room or any(re.match(pattern, room_id) for pattern in ARGS.roomregex):
+                print(f"Selected room: {room_id}")
                 await write_room_events(client, room)
+        if ARGS.batch:
+            # If the program is running in unattended batch mode,
+            # then we can quit at this point
+            raise SystemExit
         else:
             while True:
                 room = await select_room(client)
@@ -207,13 +355,9 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("output_dir", default=".", nargs="?",
-        help="directory to store output (optional; defaults to current directory)")
-    parser.add_argument("--no-media", action="store_true",
-        help="don't download media")
-    parser.add_argument("--all-rooms", action="store_true",
-        help="select all rooms")
-    args = parser.parse_args()
-    OUTPUT_DIR = mkdir(args.output_dir)
+    ARGS = parse_args()
+    if ARGS.all_rooms:
+        # Select all rooms by adding a regex pattern which matches every string
+        ARGS.roomregex.append(".*")
+    OUTPUT_DIR = mkdir(ARGS.folder)
     asyncio.get_event_loop().run_until_complete(main())
