@@ -40,8 +40,8 @@ def mkdir(path):
 
 async def create_client() -> AsyncClient:
     homeserver = "https://matrix-client.matrix.org"
-    homeserver = input(f"Enter URL of your homeserver: [{homeserver}] ") or homeserver
-    user_id = input(f"Enter your full user ID (e.g. @user:matrix.org): ")
+    homeserver = os.getenv('MX_HOMESERVER') or input(f"Enter URL of your homeserver: [{homeserver}] ") or homeserver
+    user_id = os.getenv('MX_USERID') or input(f"Enter your full user ID (e.g. @user:matrix.org): ")
     password = getpass.getpass()
     client = AsyncClient(
         homeserver=homeserver,
@@ -50,8 +50,8 @@ async def create_client() -> AsyncClient:
     )
     await client.login(password, DEVICE_NAME)
     client.load_store()
-    room_keys_path = input("Enter full path to room E2E keys: ")
-    room_keys_password = getpass.getpass("Room keys password: ")
+    room_keys_path = os.getenv('MX_KEYS_PATH') or input("Enter full path to room E2E keys: ")
+    room_keys_password = os.getenv('MX_KEYS_PASS') or getpass.getpass("Room keys password: ")
     print("Importing keys. This may take a while...")
     await client.import_keys(room_keys_path, room_keys_password)
     return client

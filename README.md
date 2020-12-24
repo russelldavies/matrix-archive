@@ -33,7 +33,7 @@ Note that at least Python 3.8+ is required.
 1. Download your E2E room keys: in the client Element you can do this by
    clicking on your profile icon, _Security & privacy_, _Export E2E room keys_.
 
-2.  Run with an optional directory to store output, e.g.: `./matrix-archive.py chats`
+2.  Run with an optional directory to store output, e.g.: `./matrix-archive.py chats`. Arguments can be passed in the environment variables: `MX_HOMESERVER`, `MX_USERID`, `MX_KEYS_PATH`, `MX_KEYS_PASS`.
 
 3. You'll be prompted to enter your homeserver, user credentials and the path
    to the room keys you downloaded in step 1.
