@@ -338,7 +338,7 @@ async def write_room_events(client, room):
                     if isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
                         media_data = await download_mxc(client, event.url)
                         filename = choose_filename(f"{media_dir}/{event.body}")
-                        event.source["_media_location"] = filename
+                        event.source["_file_path"] = filename
                         async with aiofiles.open(filename, "wb") as f_media:
                             try:
                                 await f_media.write(
