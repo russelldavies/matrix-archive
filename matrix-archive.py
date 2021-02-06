@@ -216,9 +216,11 @@ def choose_filename(filename):
     return filename
 
 
+# make filename valid
+# inspired by django: https://github.com/django/django/blob/50a5f8840fa564dcefdb1fa5c58f06fcd472ee70/django/utils/text.py#L220
 def get_valid_filename(s):
     s = str(s).strip().replace(' ', '_')
-    return re.sub(r'(?u)[^-\w.]', '', s)
+    return re.sub(r'(?u)[^-\w.]', '_', s)
 
 
 async def write_event(
