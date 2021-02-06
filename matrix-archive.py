@@ -216,11 +216,16 @@ def choose_filename(filename):
     return filename
 
 
+def get_valid_filename(s):
+    s = str(s).strip().replace(' ', '_')
+    return re.sub(r'(?u)[^-\w.]', '', s)
+
+
 async def write_event(
     client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
 ) -> None:
     if not ARGS.no_media:
-        media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
+        media_dir = mkdir(f"{OUTPUT_DIR}/{get_valid_filename(room.display_name)}_{room.room_id}_media")
     sender_name = f"<{event.sender}>"
     if event.sender in room.users:
         # If user is still present in room, include current nickname
@@ -263,7 +268,7 @@ async def write_event(
 
 
 async def save_avatars(client: AsyncClient, room: MatrixRoom) -> None:
-    avatar_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_avatars")
+    avatar_dir = mkdir(f"{OUTPUT_DIR}/{get_valid_filename(room.display_name)}_{room.room_id}_avatars")
     for user in room.users.values():
         if user.avatar_url:
             async with aiofiles.open(f"{avatar_dir}/{user.user_id}", "wb") as f:
@@ -315,7 +320,7 @@ async def write_room_events(client, room):
     # as well.
     fetch_room_events_ = partial(fetch_room_events, client, start_token, room)
     async with aiofiles.open(
-        f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}.json", "w"
+        f"{OUTPUT_DIR}/{get_valid_filename(room.display_name)}_{room.room_id}.json", "w"
     ) as f_json:
         for events in [
             reversed(await fetch_room_events_(MessageDirection.back)),
@@ -325,7 +330,7 @@ async def write_room_events(client, room):
             for event in events:
                 try:
                     if not ARGS.no_media:
-                        media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
+                        media_dir = mkdir(f"{OUTPUT_DIR}/{get_valid_filename(room.display_name)}_{room.room_id}_media")
 
                     # add additional information to the message source
                     sender_name = f"<{event.sender}>"
