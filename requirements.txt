@@ -1,2 +1,4 @@
 matrix-nio[e2e]
 pyyaml
+mechanize
+yarl

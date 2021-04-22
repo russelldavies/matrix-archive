@@ -68,7 +68,8 @@ import re
 import sys
 import yaml
 import json
-
+import mechanize
+from yarl import URL
 
 DEVICE_NAME = "matrix-archive"
 
@@ -108,6 +109,12 @@ def parse_args():
         default="https://matrix-client.matrix.org",
         help="""Set default Matrix homeserver
              """,
+    )
+    parser.add_argument(
+        "--sso",
+        metavar="SSO",
+        default=None,
+        help="Set the SSO Entity Name and identify using SSO",
     )
     parser.add_argument(
         "--user",
@@ -174,6 +181,34 @@ def mkdir(path):
     return path
 
 
+def get_sso_login_token(url, sso, username, password):
+    b = mechanize.Browser()
+    b.set_handle_robots(False)
+    b.set_header(
+        "User-Agent",
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:72.0) Gecko/20100101 Firefox/72.0",
+    )
+
+    b.set_debug_http(True)
+    b.set_debug_redirects(True)
+    b.set_debug_responses(True)
+
+    u = URL(url).with_path("_matrix/client/r0/login/sso/redirect").update_query(
+        redirectUrl=sso)
+    b.open(str(u))
+    b.select_form(nr=0)
+    b.form.find_control('j_username').value = username
+    b.form.find_control('j_password').value = password
+    r = b.submit()
+
+    # Since your browser does not support javascript ...
+    b.select_form(nr=0)
+    r = b.submit()
+    loginToken = URL(b.geturl()).query['loginToken']
+
+    return loginToken
+
+
 async def create_client() -> AsyncClient:
     homeserver = ARGS.server
     user_id = ARGS.user
@@ -182,12 +217,24 @@ async def create_client() -> AsyncClient:
         homeserver = input(f"Enter URL of your homeserver: [{homeserver}] ") or homeserver
         user_id = input(f"Enter your full user ID: [{user_id}] ") or user_id
         password = getpass.getpass()
-    client = AsyncClient(
-        homeserver=homeserver,
-        user=user_id,
-        config=AsyncClientConfig(store=store.SqliteMemoryStore),
-    )
-    await client.login(password, DEVICE_NAME)
+    if ARGS.sso:
+        u = URL(homeserver)
+        client = AsyncClient(
+            homeserver=homeserver,
+            user=f'@{user_id}:{u.host}',
+            config=AsyncClientConfig(store=store.SqliteMemoryStore),
+        )
+
+        login_token = get_sso_login_token(homeserver, ARGS.sso, ARGS.user, ARGS.userpass)
+        await client.login(device_name=DEVICE_NAME, token=login_token)
+    else:
+        client = AsyncClient(
+            homeserver=homeserver,
+            user=user_id,
+            config=AsyncClientConfig(store=store.SqliteMemoryStore),
+        )
+
+        await client.login(password, DEVICE_NAME)
     client.load_store()
     room_keys_path = ARGS.keys
     room_keys_password = ARGS.keyspass
