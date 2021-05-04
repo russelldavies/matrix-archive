@@ -170,6 +170,11 @@ def parse_args():
         help="""Don't download media
              """,
     )
+    parser.add_argument(
+        "--redact",
+        action="store_true",
+        help="redact all messages"
+    )
     return parser.parse_args()
 
 
@@ -411,6 +416,39 @@ async def write_room_events(client, room):
     print("Successfully wrote all room events to disk.")
 
 
+async def redact_room_events(client, room):
+    print(f"Redacting {room.room_id} room messages")
+    sync_resp = await client.sync(
+        full_state=True, sync_filter={"room": {"timeline": {"limit": 1}}}
+    )
+    start_token = sync_resp.rooms.join[room.room_id].timeline.prev_batch
+
+    pending = set()
+
+    # Generally, it should only be necessary to fetch back events but,
+    # sometimes depending on the sync, front events need to be fetched
+    # as well.
+    fetch_room_events_ = partial(fetch_room_events, client, start_token, room)
+    for events in [
+        reversed(await fetch_room_events_(MessageDirection.back)),
+        await fetch_room_events_(MessageDirection.front),
+    ]:
+        for event in events:
+            if isinstance(event, RedactedEvent):
+                continue
+            if event.sender != client.user_id:
+                continue
+            print(f"redacting {event}")
+            pending.add(client.room_redact(room.room_id, event.event_id))
+            if len(pending) >= 50:
+                _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+    if pending:
+        await asyncio.gather(*[i for i in pending])
+
+    print("done")
+
+
 async def main() -> None:
     try:
         client = await create_client()
@@ -423,7 +461,10 @@ async def main() -> None:
             # be automatically fetched
             if room_id in ARGS.room or any(re.match(pattern, room_id) for pattern in ARGS.roomregex):
                 print(f"Selected room: {room_id}")
-                await write_room_events(client, room)
+                if ARGS.redact:
+                    await redact_room_events(client, room)
+                else:
+                    await write_room_events(client, room)
         if ARGS.batch:
             # If the program is running in unattended batch mode,
             # then we can quit at this point
@@ -431,7 +472,10 @@ async def main() -> None:
         else:
             while True:
                 room = await select_room(client)
-                await write_room_events(client, room)
+                if ARGS.redact:
+                    await redact_room_events(client, room)
+                else:
+                    await write_room_events(client, room)
     except KeyboardInterrupt:
         sys.exit(1)
     finally:
