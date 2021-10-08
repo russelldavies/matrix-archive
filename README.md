@@ -41,3 +41,11 @@ Note that at least Python 3.8+ is required.
 4. You'll be prompted to select which room you want to archive and a YAML file
    with a log of all messages will be written along with media and member
    avatars.
+
+## sso
+In case you are using a SSO infrastructure … you have to know the SSO redirectUrl for 
+the service and may need to adjust the SSO login field names in get_sso_login_token()
+
+```
+--batch --all-rooms --sso <redirectUrl> --server <homeserver> --user <SSOUSER> 
+--userpass <SSOPASS> --keys element-keys.txt --keyspass <KEYSPASS> /tmp/test-archive/ ```
