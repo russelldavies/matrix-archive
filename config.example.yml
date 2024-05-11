@@ -1,0 +1,17 @@
+# relative paths created relative to the running script
+root_folder: backup
+server:
+  host: https://matrix-client.matrix.org
+  user: ""
+  password: ""
+  device_name: matrix-archive
+  keys_file: matrix-keys.txt
+  keys_password: ""
+
+room_list: []
+spaces_list: []
+room_regex: ""
+spaces_regex: ""
+all_rooms: False
+all_spaces: False
+no_media: False
