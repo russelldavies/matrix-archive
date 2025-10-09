@@ -272,7 +272,7 @@ async def save_avatars(client: AsyncClient, room: MatrixRoom) -> None:
 
 async def download_mxc(client: AsyncClient, url: str):
     mxc = urlparse(url)
-    response = await client.download(mxc.netloc, mxc.path.strip("/"))
+    response = await client.download(server_name=mxc.netloc, media_id=mxc.path.strip("/"))
     if hasattr(response, "body"):
         return response.body
     else:
