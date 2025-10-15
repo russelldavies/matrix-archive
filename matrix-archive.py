@@ -68,7 +68,8 @@ import re
 import sys
 import yaml
 import json
-
+import mechanize
+from yarl import URL
 
 DEVICE_NAME = "matrix-archive"
 
@@ -108,6 +109,12 @@ def parse_args():
         default="https://matrix-client.matrix.org",
         help="""Set default Matrix homeserver
              """,
+    )
+    parser.add_argument(
+        "--sso",
+        metavar="SSO",
+        default=None,
+        help="Set the SSO Entity Name and identify using SSO",
     )
     parser.add_argument(
         "--user",
@@ -163,6 +170,11 @@ def parse_args():
         help="""Don't download media
              """,
     )
+    parser.add_argument(
+        "--redact",
+        action="store_true",
+        help="redact all messages"
+    )
     return parser.parse_args()
 
 
@@ -174,6 +186,34 @@ def mkdir(path):
     return path
 
 
+def get_sso_login_token(url, sso, username, password):
+    b = mechanize.Browser()
+    b.set_handle_robots(False)
+    b.set_header(
+        "User-Agent",
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:72.0) Gecko/20100101 Firefox/72.0",
+    )
+
+    b.set_debug_http(True)
+    b.set_debug_redirects(True)
+    b.set_debug_responses(True)
+
+    u = URL(url).with_path("_matrix/client/r0/login/sso/redirect").update_query(
+        redirectUrl=sso)
+    b.open(str(u))
+    b.select_form(nr=0)
+    b.form.find_control('j_username').value = username
+    b.form.find_control('j_password').value = password
+    r = b.submit()
+
+    # Since your browser does not support javascript ...
+    b.select_form(nr=0)
+    r = b.submit()
+    loginToken = URL(b.geturl()).query['loginToken']
+
+    return loginToken
+
+
 async def create_client() -> AsyncClient:
     homeserver = ARGS.server
     user_id = ARGS.user
@@ -182,12 +222,24 @@ async def create_client() -> AsyncClient:
         homeserver = input(f"Enter URL of your homeserver: [{homeserver}] ") or homeserver
         user_id = input(f"Enter your full user ID: [{user_id}] ") or user_id
         password = getpass.getpass()
-    client = AsyncClient(
-        homeserver=homeserver,
-        user=user_id,
-        config=AsyncClientConfig(store=store.SqliteMemoryStore),
-    )
-    await client.login(password, DEVICE_NAME)
+    if ARGS.sso:
+        u = URL(homeserver)
+        client = AsyncClient(
+            homeserver=homeserver,
+            user=f'@{user_id}:{u.host}',
+            config=AsyncClientConfig(store=store.SqliteMemoryStore),
+        )
+
+        login_token = get_sso_login_token(homeserver, ARGS.sso, ARGS.user, ARGS.userpass)
+        await client.login(device_name=DEVICE_NAME, token=login_token)
+    else:
+        client = AsyncClient(
+            homeserver=homeserver,
+            user=user_id,
+            config=AsyncClientConfig(store=store.SqliteMemoryStore),
+        )
+
+        await client.login(password, DEVICE_NAME)
     client.load_store()
     room_keys_path = ARGS.keys
     room_keys_password = ARGS.keyspass
@@ -363,6 +415,39 @@ async def write_room_events(client, room):
     print("Successfully wrote all room events to disk.")
 
 
+async def redact_room_events(client, room):
+    print(f"Redacting {room.room_id} room messages")
+    sync_resp = await client.sync(
+        full_state=True, sync_filter={"room": {"timeline": {"limit": 1}}}
+    )
+    start_token = sync_resp.rooms.join[room.room_id].timeline.prev_batch
+
+    pending = set()
+
+    # Generally, it should only be necessary to fetch back events but,
+    # sometimes depending on the sync, front events need to be fetched
+    # as well.
+    fetch_room_events_ = partial(fetch_room_events, client, start_token, room)
+    for events in [
+        reversed(await fetch_room_events_(MessageDirection.back)),
+        await fetch_room_events_(MessageDirection.front),
+    ]:
+        for event in events:
+            if isinstance(event, RedactedEvent):
+                continue
+            if event.sender != client.user_id:
+                continue
+            print(f"redacting {event}")
+            pending.add(client.room_redact(room.room_id, event.event_id))
+            if len(pending) >= 50:
+                _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+    if pending:
+        await asyncio.gather(*[i for i in pending])
+
+    print("done")
+
+
 async def main() -> None:
     try:
         client = await create_client()
@@ -375,7 +460,10 @@ async def main() -> None:
             # be automatically fetched
             if room_id in ARGS.room or any(re.match(pattern, room_id) for pattern in ARGS.roomregex):
                 print(f"Selected room: {room_id}")
-                await write_room_events(client, room)
+                if ARGS.redact:
+                    await redact_room_events(client, room)
+                else:
+                    await write_room_events(client, room)
         if ARGS.batch:
             # If the program is running in unattended batch mode,
             # then we can quit at this point
@@ -383,7 +471,10 @@ async def main() -> None:
         else:
             while True:
                 room = await select_room(client)
-                await write_room_events(client, room)
+                if ARGS.redact:
+                    await redact_room_events(client, room)
+                else:
+                    await write_room_events(client, room)
     except KeyboardInterrupt:
         sys.exit(1)
     finally:
